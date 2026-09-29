@@ -230,6 +230,13 @@ note: DNS is advertising 52.128.23.6, which does NOT serve the data
 Full reference, including the routes this client doesn't wrap:
 [docs/ENDPOINTS.md](docs/ENDPOINTS.md).
 
+## Already have a PSX integration?
+
+[docs/EVALUATION-PROMPT.md](docs/EVALUATION-PROMPT.md) is a ready-made brief
+for a coding agent: it audits your existing client against eleven documented
+PSX failure modes, verifies this library's claims rather than trusting them,
+and is explicitly told to report where `psx-dps` is the worse choice.
+
 ## Tests
 
 ```bash
