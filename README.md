@@ -78,6 +78,12 @@ the fly, the defaults do the work:
   instead of hammering PSX all day.
 - **Keep-alive** and **jittered exponential backoff**.
 
+**Polling on a schedule?** A full market-wide sweep is 6 requests, so
+5-minute polling costs ~432 requests/day — 9% of the built-in daily fuse —
+and off-hours polling is free because TTLs stretch to the next open. See
+[Polling on a schedule](docs/FAIR-USE.md#polling-on-a-schedule-trackers-dashboards)
+for the numbers and the one pattern that would turn it abusive.
+
 Please read [docs/FAIR-USE.md](docs/FAIR-USE.md) before wiring this into
 anything scheduled. The two rules that matter most: share the cache
 directory, and fetch the market watch once instead of looping over symbols.
@@ -100,6 +106,7 @@ psx = Client()
 | `symbols(include_debt=False, etf_only=False)` | the universe (~1,030 rows) |
 | `search("engro")` | symbol/name substring match |
 | `market_watch()` | every trading symbol in **one** request (~496) |
+| `snapshot()` | timestamped numeric snapshot of the whole market, for pollers |
 | `quote("MARI")` / `quotes([...])` | one/many rows from the cached watch |
 | `intraday("MARI")` | today's ticks, oldest first |
 | `eod("MARI", since="2026-01-01")` | ~5y daily bars, oldest first |

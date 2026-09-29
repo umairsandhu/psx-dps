@@ -12,6 +12,7 @@ Connections are kept alive (PSX supports it; verified) so a burst of calls
 costs one TLS handshake instead of N.
 """
 
+import gzip
 import http.client
 import json
 import os
@@ -19,6 +20,7 @@ import socket
 import ssl
 import threading
 import time
+import zlib
 
 from .cache import Cache
 from .errors import NoHealthyNode, TransportError, UpstreamError
@@ -57,6 +59,7 @@ class Transport:
         self._conn = None
         self._lock = threading.RLock()
         self.requests_made = 0
+        self.bytes_downloaded = 0
 
     # -- node bookkeeping ------------------------------------------------
 
@@ -179,6 +182,19 @@ class Transport:
         conn.sock = ctx.wrap_socket(sock, server_hostname=HOST)
         return conn
 
+    @staticmethod
+    def _decode(resp, raw):
+        """Inflate the body if PSX compressed it."""
+        encoding = (resp.getheader("Content-Encoding") or "").lower()
+        try:
+            if "gzip" in encoding:
+                raw = gzip.decompress(raw)
+            elif "deflate" in encoding:
+                raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+        except (OSError, zlib.error):
+            pass  # not actually compressed; fall through to the raw bytes
+        return raw.decode("utf-8", "replace")
+
     def _raw(self, ip, method, path, body, timeout=None, reuse=True):
         """One HTTP round trip. Returns (status, text)."""
         timeout = timeout or self.timeout
@@ -186,6 +202,10 @@ class Transport:
             "User-Agent": self.user_agent,
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.9",
+            # PSX gzips on request and the win is large -- the market watch
+            # drops from ~476 KB to ~60 KB. At polling cadences that is the
+            # difference between tens of megabytes a day and a few.
+            "Accept-Encoding": "gzip, deflate",
             "Referer": f"https://{HOST}/",
         }
         payload = None
@@ -200,7 +220,7 @@ class Transport:
             try:
                 conn.request(method, path, body=payload, headers=headers)
                 resp = conn.getresponse()
-                return resp.status, resp.read().decode("utf-8", "replace")
+                return resp.status, self._decode(resp, resp.read())
             finally:
                 conn.close()
 
@@ -210,7 +230,7 @@ class Transport:
             try:
                 self._conn.request(method, path, body=payload, headers=headers)
                 resp = self._conn.getresponse()
-                text = resp.read().decode("utf-8", "replace")
+                text = self._decode(resp, resp.read())
             except (http.client.HTTPException, OSError):
                 # A kept-alive socket the server has since dropped: one clean
                 # retry on a fresh connection before treating it as an error.
@@ -218,7 +238,7 @@ class Transport:
                 self._conn = self._open(ip, timeout)
                 self._conn.request(method, path, body=payload, headers=headers)
                 resp = self._conn.getresponse()
-                text = resp.read().decode("utf-8", "replace")
+                text = self._decode(resp, resp.read())
             if resp.will_close:
                 self._close()
             return resp.status, text
@@ -244,6 +264,7 @@ class Transport:
             try:
                 status, text = self._raw(node, method, path, body)
                 self.requests_made += 1
+                self.bytes_downloaded += len(text)
             except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
                 last_error = exc
                 self._close()

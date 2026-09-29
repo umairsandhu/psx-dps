@@ -94,6 +94,67 @@ exists to be turned the polite way:
 Client(min_interval=2.0)    # a background job has no reason to rush
 ```
 
+## Polling on a schedule (trackers, dashboards)
+
+Measured, not estimated. A full market-wide sweep -- market watch, indices,
+sector summary, breadth, top symbols, top sectors -- is **6 requests** and
+covers all ~496 trading symbols:
+
+| | |
+|---|---|
+| One full sweep | 6 requests, ~125 KiB on the wire (gzipped), ~6.5s |
+| 5-minute polling, market hours | 72 polls/day -> **432 requests/day** |
+| Per month (22 trading days) | ~9,500 requests |
+| Against the 5,000/day fuse | 9% of it |
+
+So **5-minute polling of the entire market is fine.** It is roughly one
+request every 50 seconds during the session -- less than a single person
+sitting on the portal with auto-refresh on.
+
+Off-hours polling is free. Once Karachi closes, TTLs stretch to the next
+open, so a plain `*/5 * * * *` cron running 24/7 makes **zero** upstream
+requests overnight and at weekends. Verified: 12 consecutive off-hours polls,
+0 requests, 100% cache hits. You do not need to gate the cron on market hours.
+
+### The one thing that turns this abusive
+
+Calling a **per-symbol** endpoint inside the poll loop:
+
+| Pattern | Per poll | Per day |
+|---|---|---|
+| `market_watch()` once | 1 | 72 |
+| `intraday()` for each of 496 symbols | 496 | **35,712** |
+
+That is 7x over the default fuse and about 80x the traffic of doing it
+properly. It will get you throttled, and it deserves to.
+
+You almost never need it. `snapshot()` returns the whole market, numeric and
+timestamped, in one request -- store one every five minutes and you have
+built your own intraday series, including per-interval volume by differencing
+the cumulative `volume` column:
+
+```python
+from psx_dps import Client
+
+with Client() as psx:
+    snap = psx.snapshot()          # 1 request, all ~496 symbols
+    db.insert_many(snap["captured_at"], snap["rows"])
+```
+
+Reach for `intraday()` only for a handful of symbols a user is actually
+looking at, never for the whole board on a timer.
+
+### Sizing the budget
+
+The 5,000/day fuse is machine-wide and shared with every other project on
+the box. A 5-minute tracker uses ~432 of it. If the tracker is all you run,
+the default is comfortable; if you add more consumers, raise it deliberately
+rather than discovering it at 3am:
+
+```python
+Client(daily_budget=10_000)
+```
+
 ## What to do if PSX pushes back
 
 If you start seeing hangs, 429s or 503s, **stop and back off** — do not

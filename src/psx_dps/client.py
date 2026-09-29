@@ -164,6 +164,37 @@ class Client:
             if r.get("symbol", "").upper() in wanted
         ]
 
+    NUMERIC_FIELDS = ("ldcp", "open", "high", "low", "close", "change",
+                      "percentChange", "volume", "obq", "obc", "osq", "osc")
+
+    def snapshot(self, at=None):
+        """One timestamped, numeric snapshot of the whole market.
+
+        Built for pollers. A tracker that stores one of these every few
+        minutes can derive its own intraday series -- per-symbol prices and
+        per-interval volume (by differencing the cumulative `volume`) --
+        without ever calling a per-symbol endpoint. That is the difference
+        between one upstream request per poll and several hundred.
+
+        Returns {captured_at, session, rows}, where rows are market-watch
+        records with the numeric columns coerced to float/int and `listed`
+        split into a list of index memberships.
+        """
+        rows = []
+        for raw in self.market_watch():
+            row = dict(raw)
+            for field in self.NUMERIC_FIELDS:
+                if field in row:
+                    row[field] = to_number(row[field])
+            row["listed"] = [i for i in (raw.get("listed") or "").split(",") if i]
+            rows.append(row)
+        stamp = at or market.now_pkt()
+        return {
+            "captured_at": stamp.isoformat(timespec="seconds"),
+            "session": market.session_state(stamp),
+            "rows": rows,
+        }
+
     # -- time series -------------------------------------------------------
 
     def _timeseries(self, kind, symbol, force_refresh=False, ttl=None):

@@ -159,3 +159,19 @@ def test_epoch_reading_ignores_host_timezone(monkeypatch):
             os.environ["TZ"] = original
         _time.tzset()
     assert len(seen) == 1, seen
+
+
+def test_snapshot_is_numeric_and_timestamped():
+    psx = client({"/market-watch": fixture("market_watch.html")})
+    snap = psx.snapshot()
+    assert snap["captured_at"] and snap["session"] in ("open", "closed", "weekend")
+    row = snap["rows"][0]
+    for field in ("close", "volume", "percentChange"):
+        assert isinstance(row[field], float), f"{field} is {type(row[field])}"
+    assert isinstance(row["listed"], list)
+
+
+def test_snapshot_costs_one_request_for_the_whole_market():
+    psx = client({"/market-watch": fixture("market_watch.html")})
+    psx.snapshot()
+    assert len(psx.transport.calls) == 1
