@@ -1,5 +1,7 @@
 # psx-dps
 
+[![tests](https://github.com/umairsandhu/psx-dps/actions/workflows/tests.yml/badge.svg)](https://github.com/umairsandhu/psx-dps/actions/workflows/tests.yml)
+
 Unofficial Python client and CLI for the **Pakistan Stock Exchange** data
 portal ([dps.psx.com.pk](https://dps.psx.com.pk)).
 
