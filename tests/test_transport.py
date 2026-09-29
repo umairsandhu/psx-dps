@@ -8,8 +8,13 @@ touches the real internet.
 import conftest  # noqa: F401
 import pytest
 from psx_dps.cache import Cache
-from psx_dps.errors import NoHealthyNode, TransportError, UpstreamError
-from psx_dps.ratelimit import Throttle
+from psx_dps.errors import (
+    CircuitOpen,
+    NoHealthyNode,
+    TransportError,
+    UpstreamError,
+)
+from psx_dps.ratelimit import Breaker, Throttle
 from psx_dps.transport import PROBE_PATH, Transport
 
 GOOD = "10.0.0.16"
@@ -30,14 +35,15 @@ class FakeNet:
             self.fail_times -= 1
             raise OSError("connection reset")
         if ip in self.good:
-            return 200, f"payload from {ip}"
-        return 404, "<html>Not Found</html>"
+            return 200, f"payload from {ip}", None
+        return 404, "<html>Not Found</html>", None
 
 
 def build(tmp_path, net, candidates=(BAD, GOOD), **kw):
     transport = Transport(
         cache=Cache(str(tmp_path)),
         throttle=Throttle(min_interval=0, directory=str(tmp_path), daily_budget=0),
+        breaker=Breaker(directory=str(tmp_path)),
         **kw,
     )
     transport._raw = net
@@ -82,7 +88,7 @@ def test_gives_up_after_retries(tmp_path):
 
     def net(ip, method, path, body, timeout=None, reuse=True):
         if path == PROBE_PATH:
-            return 200, "ok"
+            return 200, "ok", None
         raise OSError("connection reset")
 
     transport = build(tmp_path, net, retries=2)
@@ -130,8 +136,87 @@ def test_remembers_good_nodes_for_next_time(tmp_path):
 
 def test_unexpected_status_raises_upstream_error(tmp_path):
     def net(ip, method, path, body, timeout=None, reuse=True):
-        return (200, "ok") if path == PROBE_PATH else (403, "denied")
+        return ((200, "ok", None) if path == PROBE_PATH
+                else (403, "denied", None))
 
     transport = build(tmp_path, net)
     with pytest.raises(UpstreamError):
         transport.request("/symbols", ttl=0)
+
+
+# -- standing down when PSX pushes back -----------------------------------
+
+def test_429_trips_a_cooldown_instead_of_retrying(tmp_path):
+    """Retrying into a 429 is what turns a wobble into a block."""
+    seen = []
+
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        seen.append(path)
+        return (200, "ok", None) if path == PROBE_PATH else (429, "slow down", None)
+
+    transport = build(tmp_path, net, retries=5)
+    with pytest.raises(CircuitOpen):
+        transport.request("/market-watch", ttl=0)
+    assert seen.count("/market-watch") == 1, "must not retry into a 429"
+    assert transport.breaker.remaining() > 0
+
+
+def test_cooldown_blocks_the_next_call_without_sending_it(tmp_path):
+    """The next cron cycle must skip, not hit PSX again at full speed."""
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        return (200, "ok", None) if path == PROBE_PATH else (429, "slow", None)
+
+    transport = build(tmp_path, net)
+    with pytest.raises(CircuitOpen):
+        transport.request("/market-watch", ttl=0)
+    before = len(transport.breaker._read())
+    with pytest.raises(CircuitOpen):
+        transport.request("/indices", ttl=0)   # different path, still barred
+    assert before
+
+
+def test_cooldown_is_shared_between_clients(tmp_path):
+    """One project's 429 must silence the others on the same machine."""
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        return (200, "ok", None) if path == PROBE_PATH else (429, "slow", None)
+
+    first = build(tmp_path, net)
+    with pytest.raises(CircuitOpen):
+        first.request("/market-watch", ttl=0)
+
+    second = build(tmp_path, FakeNet())          # a healthy, unrelated client
+    with pytest.raises(CircuitOpen):
+        second.request("/symbols", ttl=0)
+
+
+def test_retry_after_header_is_honoured(tmp_path):
+    """If PSX names a wait, it wins over our own escalation."""
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        if path == PROBE_PATH:
+            return 200, "ok", None
+        return 503, "unavailable", 1800.0
+
+    transport = build(tmp_path, net)
+    with pytest.raises(CircuitOpen):
+        transport.request("/market-watch", ttl=0)
+    assert transport.breaker.remaining() > 1700
+
+
+def test_cache_still_served_while_cooling_down(tmp_path):
+    """A cooldown must not blind an app that already has fresh data."""
+    transport = build(tmp_path, FakeNet())
+    transport.request("/symbols", ttl=300)          # warm the cache
+    transport.breaker.record_failure("HTTP 429")
+    assert transport.request("/symbols", ttl=300) == f"payload from {GOOD}"
+
+
+def test_repeated_transport_failure_also_cools_down(tmp_path):
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        if path == PROBE_PATH:
+            return 200, "ok", None
+        raise OSError("connection reset")
+
+    transport = build(tmp_path, net, retries=2)
+    with pytest.raises(TransportError):
+        transport.request("/symbols", ttl=0)
+    assert transport.breaker.remaining() > 0

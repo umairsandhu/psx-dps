@@ -17,6 +17,7 @@ anything that runs on a schedule.
 from .cache import Cache
 from .client import ANNOUNCEMENT_TYPES, INDEX_CODES, Client
 from .errors import (
+    CircuitOpen,
     NoData,
     NoHealthyNode,
     PSXError,
@@ -26,7 +27,7 @@ from .errors import (
     UpstreamError,
 )
 from .parsing import to_number
-from .ratelimit import Throttle
+from .ratelimit import Breaker, Throttle
 from .transport import HOST, Transport
 
 __version__ = "0.1.0"
@@ -35,6 +36,7 @@ __all__ = [
     "Client",
     "Cache",
     "Throttle",
+    "Breaker",
     "Transport",
     "HOST",
     "ANNOUNCEMENT_TYPES",
@@ -47,5 +49,6 @@ __all__ = [
     "UnknownSymbol",
     "NoData",
     "RateLimited",
+    "CircuitOpen",
     "__version__",
 ]

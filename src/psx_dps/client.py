@@ -18,7 +18,7 @@ from . import market
 from .cache import Cache
 from .errors import NoData, UnknownSymbol, UpstreamError
 from .parsing import drop_widget_columns, table_records, to_number
-from .ratelimit import Throttle
+from .ratelimit import Breaker, Throttle
 from .transport import HOST, Transport
 
 ANNOUNCEMENT_TYPES = {
@@ -57,6 +57,7 @@ class Client:
         stale_ttl=None,
         user_agent=None,
         is_open=None,
+        respect_cooldown=True,
     ):
         store = Cache(cache_dir, enabled=cache)
         self.cache = store
@@ -64,6 +65,7 @@ class Client:
             cache=store,
             throttle=Throttle(min_interval, directory=store.dir,
                               daily_budget=daily_budget),
+            breaker=Breaker(directory=store.dir, enabled=respect_cooldown),
             timeout=timeout,
             retries=retries,
             user_agent=user_agent,
@@ -354,6 +356,9 @@ class Client:
             "session": market.session_state(),
             "pkt_now": market.now_pkt().isoformat(timespec="seconds"),
             "upstream_requests": self.transport.requests_made,
+            "bytes_downloaded": self.transport.bytes_downloaded,
+            "budget_used_24h": self.transport.throttle.spent(),
+            "cooldown": self.transport.breaker.status(),
             "cache": self.cache.stats(),
         }
 

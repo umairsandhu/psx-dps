@@ -70,3 +70,52 @@ def test_backoff_is_bounded_and_jittered():
     delays = list(backoff_delays(5, base=0.5, cap=4.0))
     assert len(delays) == 5
     assert all(0 <= d <= 4.0 for d in delays)
+
+
+# -- circuit breaker -------------------------------------------------------
+
+def test_penalty_escalates_then_forgives(tmp_path):
+    from psx_dps.ratelimit import Breaker
+
+    breaker = Breaker(directory=str(tmp_path))
+    assert breaker.record_failure("429") == 60
+    assert breaker.record_failure("429") == 300
+    assert breaker.record_failure("429") == 900
+    assert breaker.record_failure("429") == 3600
+    assert breaker.record_failure("429") == 3600, "should cap, not grow forever"
+
+
+def test_explicit_retry_after_wins(tmp_path):
+    from psx_dps.ratelimit import Breaker
+
+    breaker = Breaker(directory=str(tmp_path))
+    assert breaker.record_failure("503", retry_after=1800) == 1800
+
+
+def test_check_raises_while_cooling_and_clears_after(tmp_path):
+    from psx_dps.errors import CircuitOpen
+    from psx_dps.ratelimit import Breaker
+
+    breaker = Breaker(directory=str(tmp_path))
+    breaker.check()                       # clear: no raise
+    breaker.record_failure("429")
+    with pytest.raises(CircuitOpen):
+        breaker.check()
+    assert breaker.status()["cooling_down"] is True
+
+
+def test_cooldown_is_visible_to_another_process(tmp_path):
+    from psx_dps.errors import CircuitOpen
+    from psx_dps.ratelimit import Breaker
+
+    Breaker(directory=str(tmp_path)).record_failure("429")
+    with pytest.raises(CircuitOpen):
+        Breaker(directory=str(tmp_path)).check()
+
+
+def test_breaker_can_be_disabled(tmp_path):
+    from psx_dps.ratelimit import Breaker
+
+    breaker = Breaker(directory=str(tmp_path), enabled=False)
+    breaker.record_failure("429")
+    breaker.check()                       # must not raise

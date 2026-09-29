@@ -155,6 +155,113 @@ rather than discovering it at 3am:
 Client(daily_budget=10_000)
 ```
 
+## How not to get blocked
+
+Blocks are rarely a response to volume. They are a response to **behaviour
+during trouble**: the server wobbles, every client retries harder, the wobble
+becomes an outage, and an operator ends it with a firewall rule. A steady,
+modest, well-behaved poller is invisible. A client that hammers hardest
+exactly when PSX is least able to cope is the one that gets noticed.
+
+So the rule is simple: **when PSX pushes back, go quieter, not louder.**
+
+### What the library does for you now
+
+| Signal from PSX | What happens |
+|---|---|
+| `429` or `503` | Stops immediately — **no retries** — and trips a shared cooldown |
+| `Retry-After` header | Honoured, and it overrides our own timing even if longer |
+| `500`, `502`, `504` | Retried a few times with jittered backoff, then cooldown |
+| Repeated connection failures | Cooldown, so the next cron run does not walk into it |
+
+The cooldown escalates — **60s, 5min, 15min, then 1h** — and resets after 15
+clean minutes. So a single blip costs you a minute; a sustained problem costs
+an hour and stops being your problem.
+
+Critically it is **shared across processes**. One project's 429 stands every
+other `psx-dps` process on the machine down too, instead of each of them
+rediscovering the hard way. Cached data is still served throughout, so a
+cooldown slows your refresh rate without blinding your app.
+
+Cooldowns are *raised* (`CircuitOpen`), never slept through. A scheduled job
+should skip that cycle:
+
+```python
+from psx_dps import Client, CircuitOpen
+
+try:
+    snap = psx.snapshot()
+    store(snap)
+except CircuitOpen as e:
+    log.warning("PSX pushed back, skipping this cycle: %s", e)
+    return            # do NOT retry, do NOT clear the cooldown
+```
+
+### What you still have to do
+
+**1. Alert on `CircuitOpen`, do not swallow it.** It is the early warning
+that your usage has become visible. One a month is noise; several a day
+means fix your usage now, before someone at PSX does it for you.
+
+```bash
+psx-dps doctor      # shows cooldown state, strikes, and the last reason
+```
+
+**2. Never work around a block.** No proxy rotation, no rotating User-Agents,
+no browser fingerprint spoofing, no clearing the cooldown to keep polling.
+That is the line between "a tolerated reader" and "something PSX is actively
+trying to stop" — and it is the one thing that turns a temporary throttle
+into a permanent ban. `psx-dps cooldown --clear` exists for when you have
+genuinely fixed the cause, not for impatience.
+
+**3. Stay contactable.** Keep a User-Agent that names the project and gives
+a way to reach you:
+
+```python
+Client(user_agent="markaz-psx-tracker/1.0 (+https://markaz.app/contact)")
+```
+
+An operator who can see what you are and email you will email you. One
+looking at anonymous traffic pretending to be Chrome will just block it.
+
+**4. One writer, many readers.** Run a single poller that fetches and stores;
+have dashboards and notebooks read your database, not PSX. Five services
+polling independently is five times the footprint for identical data.
+
+**5. Stagger your schedule.** Do not fire exactly on the 5-minute boundary
+from several hosts — offset each by a random few seconds so you never arrive
+as a burst.
+
+```cron
+*/5 * * * * sleep $((RANDOM \% 30)); /srv/tracker/poll.py
+```
+
+**6. Do not raise the limits to paper over a problem.** If you are hitting
+the daily fuse, the answer is caching or a coarser schedule, not
+`daily_budget=50_000`.
+
+**7. Fail soft.** If PSX is down, your app should show stale data with a
+timestamp, not retry in a loop. The data is already cached with
+`captured_at` on every snapshot — use it.
+
+### A quick self-audit
+
+Run this after a week. If it does not look like this, something is wrong:
+
+```python
+with Client() as psx:
+    print(psx.health())
+```
+
+| Field | Healthy for a 5-minute tracker |
+|---|---|
+| `budget_used_24h` | a few hundred, not thousands |
+| `cooldown.strikes` | 0 |
+| `cache.hit_rate` | high, if anything else reads through the same client |
+| `upstream_requests` | ~6 per poll cycle, flat over time |
+
+A request count that grows week over week means something is looping.
+
 ## What to do if PSX pushes back
 
 If you start seeing hangs, 429s or 503s, **stop and back off** — do not

@@ -44,3 +44,14 @@ class RateLimited(PSXError):
     Raised when the configured request budget is exhausted, so runaway loops
     fail loudly here instead of quietly hammering PSX.
     """
+
+
+class CircuitOpen(PSXError):
+    """PSX signalled distress recently, so we are deliberately standing down.
+
+    Raised instead of sending a request while a cooldown is in effect. The
+    cooldown is shared by every process on the machine: if one project gets
+    a 429, the others stop too, rather than each discovering it the hard way.
+
+    Treat this as "skip this cycle", not as a failure to retry around.
+    """

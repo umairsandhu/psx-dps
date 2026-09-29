@@ -76,7 +76,11 @@ the fly, the defaults do the work:
   lock file, so three projects share one budget instead of getting one each.
 - **24h budget fuse** (5,000 requests) so a runaway loop fails locally
   instead of hammering PSX all day.
-- **Keep-alive** and **jittered exponential backoff**.
+- **Keep-alive**, **gzip** and **jittered exponential backoff**.
+- **Stands down when PSX pushes back** — a 429 or 503 trips a shared,
+  escalating cooldown (60s → 1h) across every process on the machine, with
+  no retries into it, honouring `Retry-After`. Cached data keeps serving.
+  See [How not to get blocked](docs/FAIR-USE.md#how-not-to-get-blocked).
 
 **Polling on a schedule?** A full market-wide sweep is 6 requests, so
 5-minute polling costs ~432 requests/day — 9% of the built-in daily fuse —

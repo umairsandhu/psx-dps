@@ -185,6 +185,13 @@ def cmd_doctor(args):
           f"({market.now_pkt().strftime('%a %Y-%m-%d %H:%M %Z')})")
     print(f"cache dir    {transport.cache.dir}")
     print(f"budget used  {transport.throttle.spent()} requests in the last 24h")
+    cooldown = transport.breaker.status()
+    if cooldown["cooling_down"]:
+        print(f"cooldown     STANDING DOWN for {cooldown['seconds_remaining']}s "
+              f"after {cooldown['strikes']} strike(s): {cooldown['reason']}")
+        print("             PSX pushed back. Let it expire; do not work around it.")
+    else:
+        print(f"cooldown     clear ({cooldown['strikes']} recent strike(s))")
     print(f"\nprobing {PROBE_PATH} on each candidate:")
     good = []
     for ip in transport.candidates():
@@ -208,6 +215,25 @@ def cmd_doctor(args):
     if dns and dns[0] not in good:
         print(f"note: DNS is advertising {dns[0]}, which does NOT serve the data\n"
               "      routes. This is the failure mode psx-dps exists to absorb.")
+
+
+def cmd_cooldown(args):
+    from .ratelimit import Breaker
+
+    breaker = Breaker(directory=args.cache_dir)
+    status = breaker.status()
+    if args.clear:
+        breaker._write({})
+        print("cooldown cleared.")
+        print("Only do this if you know why PSX pushed back and have fixed it "
+              "-- clearing it to keep polling is how a warning becomes a block.")
+        return
+    if status["cooling_down"]:
+        print(f"STANDING DOWN for {status['seconds_remaining']}s")
+        print(f"strikes  {status['strikes']}")
+        print(f"reason   {status['reason']}")
+    else:
+        print(f"clear ({status['strikes']} recent strike(s))")
 
 
 def cmd_cache(args):
@@ -314,6 +340,10 @@ def build_parser():
 
     p = sub.add_parser("doctor", help="probe nodes, show session/cache state")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("cooldown", help="show or clear the shared back-off state")
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(func=cmd_cooldown)
 
     p = sub.add_parser("cache", help="inspect or clear the shared cache")
     p.add_argument("--clear", action="store_true")

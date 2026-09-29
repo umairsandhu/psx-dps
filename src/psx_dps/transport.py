@@ -23,8 +23,13 @@ import time
 import zlib
 
 from .cache import Cache
-from .errors import NoHealthyNode, TransportError, UpstreamError
-from .ratelimit import Throttle, backoff_delays
+from .errors import (
+    CircuitOpen,
+    NoHealthyNode,
+    TransportError,
+    UpstreamError,
+)
+from .ratelimit import Breaker, Throttle, backoff_delays
 
 HOST = "dps.psx.com.pk"
 USER_AGENT = os.environ.get(
@@ -47,9 +52,13 @@ class Transport:
         retries=3,
         state_dir=None,
         user_agent=None,
+        breaker=None,
     ):
         self.cache = cache if cache is not None else Cache()
         self.throttle = throttle if throttle is not None else Throttle()
+        self.breaker = breaker if breaker is not None else Breaker(
+            directory=self.cache.dir if cache is not None else None
+        )
         self.timeout = timeout
         self.retries = max(1, int(retries))
         self.user_agent = user_agent or USER_AGENT
@@ -120,7 +129,8 @@ class Transport:
     def probe(self, ip):
         """Does this node serve the data routes? Returns (ok, status_or_err)."""
         try:
-            status, _ = self._raw(ip, "GET", PROBE_PATH, None, timeout=12, reuse=False)
+            status = self._raw(ip, "GET", PROBE_PATH, None, timeout=12,
+                               reuse=False)[0]
             return status == 200, status
         except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
             return False, exc
@@ -183,6 +193,26 @@ class Transport:
         return conn
 
     @staticmethod
+    def _retry_after(resp):
+        """Seconds PSX asked us to wait, if it said so. Supports both forms."""
+        raw = resp.getheader("Retry-After")
+        if not raw:
+            return None
+        raw = raw.strip()
+        if raw.isdigit():
+            return float(raw)
+        try:  # HTTP-date form
+            from email.utils import parsedate_to_datetime
+
+            target = parsedate_to_datetime(raw)
+            import datetime as _dt
+
+            now = _dt.datetime.now(tz=target.tzinfo)
+            return max(0.0, (target - now).total_seconds())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _decode(resp, raw):
         """Inflate the body if PSX compressed it."""
         encoding = (resp.getheader("Content-Encoding") or "").lower()
@@ -220,7 +250,8 @@ class Transport:
             try:
                 conn.request(method, path, body=payload, headers=headers)
                 resp = conn.getresponse()
-                return resp.status, self._decode(resp, resp.read())
+                return (resp.status, self._decode(resp, resp.read()),
+                        self._retry_after(resp))
             finally:
                 conn.close()
 
@@ -241,7 +272,7 @@ class Transport:
                 text = self._decode(resp, resp.read())
             if resp.will_close:
                 self._close()
-            return resp.status, text
+            return resp.status, text, self._retry_after(resp)
 
     # -- public API --------------------------------------------------------
 
@@ -253,6 +284,9 @@ class Transport:
             if cached is not None:
                 return cached
 
+        # Stand down before spending a request if PSX pushed back recently.
+        self.breaker.check()
+
         node = self._node or self.select_node()
         last_error = None
         reprobed = False
@@ -262,7 +296,7 @@ class Transport:
                 time.sleep(delay)
             self.throttle.acquire()
             try:
-                status, text = self._raw(node, method, path, body)
+                status, text, retry_after = self._raw(node, method, path, body)
                 self.requests_made += 1
                 self.bytes_downloaded += len(text)
             except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
@@ -273,6 +307,7 @@ class Transport:
                 continue
 
             if status == 200:
+                self.breaker.record_success()
                 if ttl > 0:
                     self.cache.set(method, path, body, text)
                 return text
@@ -284,13 +319,29 @@ class Transport:
                 last_error = UpstreamError(f"{path}: HTTP 404 on node {node}")
                 continue
 
-            if status in (429, 500, 502, 503, 504):
+            if status in (429, 503):
+                # An explicit "you are asking too much". Do not burn the
+                # remaining retries on it -- stand down so the next poll,
+                # and every other project on this machine, backs off too.
+                waited = self.breaker.record_failure(f"HTTP {status} on {path}",
+                                                     retry_after)
+                raise CircuitOpen(
+                    f"{path}: PSX returned HTTP {status}. Standing down for "
+                    f"{int(waited)}s across all psx-dps processes here."
+                )
+
+            if status in (500, 502, 504):
                 last_error = UpstreamError(f"{path}: HTTP {status}")
                 continue
 
             raise UpstreamError(f"{path}: HTTP {status}")
 
-        raise TransportError(f"{path} failed after {self.retries} attempts: {last_error}")
+        # Repeated failure is itself a signal; cool down rather than let the
+        # next scheduled run walk straight back into it.
+        self.breaker.record_failure(f"{self.retries} failed attempts on {path}")
+        raise TransportError(
+            f"{path} failed after {self.retries} attempts: {last_error}"
+        )
 
     def close(self):
         with self._lock:
