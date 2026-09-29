@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <strong><a href="https://umairsandhu.github.io/psx-dps/">📖 Documentation site</a></strong>
+</p>
+
+<p align="center">
   <a href="https://github.com/umairsandhu/psx-dps/actions/workflows/tests.yml"><img src="https://github.com/umairsandhu/psx-dps/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen" alt="Zero dependencies">
