@@ -41,16 +41,23 @@ def test_spent_counts_across_instances(tmp_path):
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="needs fcntl")
 def test_limit_holds_across_processes(tmp_path):
-    """The reason the state is on disk: two projects must not each get 1/s."""
+    """The reason the state is on disk: two projects must not each get 1/s.
+
+    Asserts on the throttle's own record of when each slot was granted, not
+    on wall-clock time after acquire() returns. A loaded CI runner can
+    deschedule a process between those two moments, which makes the grants
+    look closer together than they were -- a measurement artefact that had
+    this test failing spuriously.
+    """
     script = textwrap.dedent(
         f"""
-        import sys, time
+        import sys
         sys.path.insert(0, {str(conftest.FIXTURES + "/../../src")!r})
         from psx_dps.ratelimit import Throttle
         t = Throttle(min_interval=0.3, directory={str(tmp_path)!r}, daily_budget=0)
         for _ in range(3):
             t.acquire()
-            print(time.time(), flush=True)
+            print(t.last_grant, flush=True)
         """
     )
     procs = [
@@ -63,7 +70,9 @@ def test_limit_holds_across_processes(tmp_path):
     )
     assert len(stamps) == 9
     gaps = [b - a for a, b in zip(stamps, stamps[1:])]
-    assert min(gaps) >= 0.25, f"requests came {min(gaps):.3f}s apart"
+    # Grants are recorded under the lock, so this is exact bookkeeping and
+    # can be asserted tightly. A real cross-process race still fails it.
+    assert min(gaps) >= 0.3, f"slots granted {min(gaps):.3f}s apart"
 
 
 def test_backoff_is_bounded_and_jittered():

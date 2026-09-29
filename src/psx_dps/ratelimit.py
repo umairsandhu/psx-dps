@@ -72,6 +72,10 @@ class Throttle:
         base = os.path.expanduser(directory or "~/.cache/psx-dps")
         self.state_path = os.path.join(base, "throttle.json")
         self.lock_path = os.path.join(base, "throttle.lock")
+        #: Time the last slot was granted. This, not the caller's wall clock
+        #: after acquire() returns, is the real spacing between requests --
+        #: a loaded machine can deschedule a process between the two.
+        self.last_grant = None
 
     def _read(self):
         try:
@@ -113,6 +117,7 @@ class Throttle:
                     state["last"] = now
                     state["count"] = state.get("count", 0) + 1
                     self._write(state)
+                    self.last_grant = now
                     return waited
                 sleep_for = self.min_interval - gap
 
