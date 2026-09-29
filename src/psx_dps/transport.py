@@ -135,6 +135,23 @@ class Transport:
         except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
             return False, exc
 
+    def verify_tls(self, ip, timeout=10):
+        """Confirm the cert is valid for HOST even though we dial an IP.
+
+        Pinning by address must never mean trusting the address: the TLS
+        handshake still uses SNI for the real hostname, so a wrong or
+        hijacked node fails here rather than silently serving us data.
+        """
+        try:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((ip, 443), timeout=timeout) as raw:
+                with ctx.wrap_socket(raw, server_hostname=HOST) as tls:
+                    cert = tls.getpeercert()
+            subject = dict(x[0] for x in cert["subject"])
+            return True, subject.get("commonName", HOST)
+        except (OSError, ssl.SSLError, KeyError, TypeError) as exc:
+            return False, exc
+
     def select_node(self, force=False, report=None):
         with self._lock:
             if not force:

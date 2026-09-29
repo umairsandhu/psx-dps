@@ -95,6 +95,8 @@ Two documents worth reading before you wire this into anything scheduled:
   directory, and fetch the market watch once instead of looping over symbols.
 - **[docs/STAYING-UNBLOCKED.md](docs/STAYING-UNBLOCKED.md)** — what happens
   when PSX pushes back, what `CoolingDown` means, and the runbook for it.
+- **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** — how PSX has broken
+  before, how each break was diagnosed, and what to do next time.
 
 Check your own footprint any time:
 
@@ -187,6 +189,7 @@ psx.quote("NOTREAL")  # UnknownSymbol
 | `history [SYM --month M --year Y] \| [--date D]` | official historical table |
 | `announcements [--type] [--symbol] [--query] [--count]` | announcements |
 | `movers` · `indices` · `index CODE` · `sectors` | breadth, indices, sectors |
+| `diagnose [--deep] [--rescan]` | find what broke, fix what it can, exit 1 on failure |
 | `doctor` | probe nodes, show session/cache/budget state |
 | `cache [--clear]` | inspect or clear the shared cache |
 
@@ -194,7 +197,27 @@ Global flags: `--json`, `--csv`, `--no-cache`, `--cache-dir`,
 `--min-interval`. Exit status is 1 on no rows or unknown symbol, so it
 composes in scripts.
 
-`psx-dps doctor` is the first thing to run when something looks wrong:
+**Something broken?** `psx-dps diagnose --deep` works out *which* thing
+broke — local network, node selection, an active cooldown, or PSX changing a
+payload — fixes what it can, and names what it cannot. Exit status is
+non-zero on failure, so it drops into a health check:
+
+```
+[  ok  ] node health     serving data: 52.128.23.16 | serving pages but NOT data: 52.128.23.6
+[  ok  ] tls             valid certificate for psx.com.pk
+[  ok  ] cooldown        clear (0 recent strike(s))
+[  ok  ] GET  /symbols               1029 instruments
+[  ok  ] GET  /market-watch          496 trading symbols
+[  ok  ] GET  /timeseries/eod/MARI   1239 daily bars
+```
+
+The endpoint checks validate the **shape** of each response, not just the
+status code — a route returning 200 with a redesigned body is the failure
+that silently corrupts a database for a week before anyone notices.
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) has the full runbook,
+including how to re-derive the endpoints from scratch if PSX moves them.
+
+`psx-dps doctor` is a quicker look at node and session state:
 
 ```
 DNS answer   52.128.23.6

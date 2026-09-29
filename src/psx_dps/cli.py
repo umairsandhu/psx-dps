@@ -217,6 +217,44 @@ def cmd_doctor(args):
               "      routes. This is the failure mode psx-dps exists to absorb.")
 
 
+SYMBOLS = {"ok": "  ok  ", " warn ": " warn ", "fail": " FAIL "}
+
+
+def cmd_diagnose(args):
+    from . import diagnose
+
+    transport = Transport()
+    checks, fixed = diagnose.run(
+        transport, deep=args.deep, rescan=args.rescan,
+        log=(lambda m: None) if args.json else print,
+    )
+    if args.json:
+        json.dump({"checks": [c.as_dict() for c in checks], "fixed": fixed},
+                  sys.stdout, indent=2)
+        print()
+    else:
+        width = max(len(c.name) for c in checks)
+        for check in checks:
+            tag = {"ok": "  ok ", "warn": " warn", "fail": " FAIL"}[check.status]
+            print(f"[{tag} ] {check.name.ljust(width)}  {check.detail}")
+            if check.fix:
+                print(f"{'':>9} {'':<{width}}  -> {check.fix}")
+        if fixed:
+            print("\nfixed automatically:")
+            for item in fixed:
+                print(f"  - {item}")
+        if not args.deep:
+            print("\nRun with --deep to validate every endpoint's payload shape")
+            print("(that is what catches PSX changing a response format).")
+    worst = max((c.status for c in checks),
+                key=lambda s: {"ok": 0, "warn": 1, "fail": 2}[s])
+    if worst == "fail":
+        if not args.json:
+            print("\nSomething is broken. docs/TROUBLESHOOTING.md walks through "
+                  "each failure above.")
+        sys.exit(1)
+
+
 def cmd_cooldown(args):
     from .ratelimit import Breaker
 
@@ -340,6 +378,16 @@ def build_parser():
 
     p = sub.add_parser("doctor", help="probe nodes, show session/cache state")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser(
+        "diagnose",
+        help="work out what is broken, fix what can be fixed automatically",
+    )
+    p.add_argument("--deep", action="store_true",
+                   help="also validate every endpoint's payload shape")
+    p.add_argument("--rescan", action="store_true",
+                   help="hunt for renumbered PSX nodes (last resort)")
+    p.set_defaults(func=cmd_diagnose)
 
     p = sub.add_parser("cooldown", help="show or clear the shared back-off state")
     p.add_argument("--clear", action="store_true")

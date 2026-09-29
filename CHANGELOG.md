@@ -13,6 +13,12 @@
 - Renamed `CircuitOpen` to `CoolingDown` because the old name was jargon.
   `CircuitOpen` remains as an alias.
 - New [docs/STAYING-UNBLOCKED.md](docs/STAYING-UNBLOCKED.md).
+- `psx-dps diagnose [--deep] [--rescan]`, also importable as `diagnose.run()`,
+  which separates the failure modes that all look like "no data" and repins
+  a stale node automatically. `--deep` validates every endpoint's payload
+  *shape*, catching a PSX redesign that still returns 200.
+- New [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and
+  [docs/EVALUATION-PROMPT.md](docs/EVALUATION-PROMPT.md).
 
 ## 0.1.0 — 2026-09-29
 
