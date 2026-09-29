@@ -17,7 +17,14 @@
   which separates the failure modes that all look like "no data" and repins
   a stale node automatically. `--deep` validates every endpoint's payload
   *shape*, catching a PSX redesign that still returns 200.
-- New [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and
+- `psx-dps nodes` records every probe with a timestamp, so "when did the IP
+  change?" is answerable after the fact; `--sample` harvests the rotating A
+  record over time using DNS only.
+- Corrected a wrong finding: `X-Requested-With` does **not** trigger a 403.
+  A 403 on a data route means you are on a node that does not serve them.
+  There is no WAF on this service.
+- New [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md),
+  [docs/SYMBOLS.md](docs/SYMBOLS.md) and
   [docs/EVALUATION-PROMPT.md](docs/EVALUATION-PROMPT.md).
 
 ## 0.1.0 — 2026-09-29

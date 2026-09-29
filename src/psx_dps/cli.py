@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 
 from . import __version__, market
 from .client import ANNOUNCEMENT_TYPES, Client
@@ -255,6 +256,67 @@ def cmd_diagnose(args):
         sys.exit(1)
 
 
+def _ago(stamp):
+    if not stamp:
+        return "never"
+    delta = time.time() - stamp
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if delta >= size:
+            return f"{int(delta // size)}{unit} ago"
+    return "just now"
+
+
+def cmd_nodes(args):
+    """Answer 'which address is PSX on, and when did that change?'"""
+    transport = Transport()
+    if args.sample:
+        print(f"sampling DNS {args.sample} times, {args.interval}s apart "
+              f"(the A record rotates, so one lookup is not the whole story)")
+        found = {}
+        for i in range(args.sample):
+            for ip in transport.dns():
+                found.setdefault(ip, 0)
+                found[ip] += 1
+            if i < args.sample - 1:
+                time.sleep(args.interval)
+        print(f"\naddresses DNS returned over {args.sample} samples:")
+        for ip, hits in sorted(found.items(), key=lambda kv: -kv[1]):
+            print(f"  {ip:<16} seen {hits}/{args.sample}")
+        for ip in found:
+            transport.probe(ip)
+
+    dns_now = transport.dns()
+    history = transport.history()
+    if not history:
+        print("no observations recorded yet -- run `psx-dps diagnose` first")
+        return
+
+    print(f"\n{'ADDRESS':<16} {'DATA':<6} {'IN DNS':<7} {'FIRST SEEN':<12} "
+          f"{'LAST SERVED':<13} {'LAST CHECKED'}")
+    for ip, entry in sorted(history.items(),
+                            key=lambda kv: -(kv[1].get("last_ok") or 0)):
+        print(f"{ip:<16} {'yes' if entry.get('serves_data') else 'NO':<6} "
+              f"{'yes' if ip in dns_now else '-':<7} "
+              f"{_ago(entry.get('first_seen')):<12} "
+              f"{_ago(entry.get('last_ok')):<13} "
+              f"{_ago(entry.get('last_seen'))}")
+
+    serving = [ip for ip, e in history.items() if e.get("serves_data")]
+    dead = [ip for ip, e in history.items()
+            if not e.get("serves_data") and e.get("last_ok")]
+    print()
+    if serving:
+        print(f"currently serving data: {', '.join(serving)}")
+    else:
+        print("NOTHING is currently serving data -- run: psx-dps diagnose --rescan")
+    if dead:
+        print(f"used to serve data, no longer: {', '.join(dead)}  "
+              "<- this is what a renumbering looks like")
+    if dns_now and not any(history.get(ip, {}).get("serves_data") for ip in dns_now):
+        print(f"note: DNS is advertising {', '.join(dns_now)}, which does NOT "
+              "serve data. Normal for PSX -- the pool is why this still works.")
+
+
 def cmd_cooldown(args):
     from .ratelimit import Breaker
 
@@ -388,6 +450,14 @@ def build_parser():
     p.add_argument("--rescan", action="store_true",
                    help="hunt for renumbered PSX nodes (last resort)")
     p.set_defaults(func=cmd_diagnose)
+
+    p = sub.add_parser(
+        "nodes", help="which PSX addresses work, and when that last changed")
+    p.add_argument("--sample", type=int, metavar="N",
+                   help="poll DNS N times to harvest the rotating A record")
+    p.add_argument("--interval", type=float, default=30.0,
+                   help="seconds between DNS samples (default 30)")
+    p.set_defaults(func=cmd_nodes)
 
     p = sub.add_parser("cooldown", help="show or clear the shared back-off state")
     p.add_argument("--clear", action="store_true")

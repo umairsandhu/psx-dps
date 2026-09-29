@@ -80,6 +80,35 @@ class Transport:
         except (OSError, ValueError):
             return {}
 
+    def record_observation(self, ip, serves_data):
+        """Keep a dated record of what each address was doing.
+
+        This is what makes "when did the IP change?" answerable after the
+        fact. Without it, a renumbering is invisible until everything breaks
+        and nobody can say what the old address was or when it stopped
+        working. Bounded by the number of addresses ever seen, so it cannot
+        grow without limit.
+        """
+        now = time.time()
+        state = self._state()
+        history = state.get("history", {})
+        entry = history.get(ip) or {"first_seen": now, "last_ok": None}
+        entry["last_seen"] = now
+        entry["serves_data"] = bool(serves_data)
+        if serves_data:
+            entry["last_ok"] = now
+        history[ip] = entry
+        state["history"] = history
+        try:
+            os.makedirs(os.path.dirname(self.node_path), exist_ok=True)
+            with open(self.node_path, "w") as fh:
+                json.dump(state, fh)
+        except OSError:
+            pass
+
+    def history(self):
+        return self._state().get("history", {})
+
     def _save_state(self, ip, candidates=()):
         state = self._state()
         known = state.get("known", [])
@@ -131,8 +160,10 @@ class Transport:
         try:
             status = self._raw(ip, "GET", PROBE_PATH, None, timeout=12,
                                reuse=False)[0]
+            self.record_observation(ip, status == 200)
             return status == 200, status
         except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            self.record_observation(ip, False)
             return False, exc
 
     def verify_tls(self, ip, timeout=10):

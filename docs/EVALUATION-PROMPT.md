@@ -100,8 +100,12 @@ data that cannot change?
 **10. Friday's split session.** PSX breaks for Jummah. Does any market-hours
 logic we have know that?
 
-**11. `X-Requested-With`.** Sending `X-Requested-With: XMLHttpRequest`
-triggers an empty 403. Do we send it?
+**11. Misreading a 403 as a block.** There is no WAF on this service. A
+`403` on a data route means you are on a node that does not serve them (the
+same condition that gives `404` without an `X-Requested-With` header) — it
+does not mean you are blocked. Does our code treat a 403 as a ban, disable
+itself, or start rotating User-Agents/proxies? Any of those is a bug, and
+the last one is the behaviour most likely to get us genuinely blocked.
 
 ## Step 3 — compare data coverage
 

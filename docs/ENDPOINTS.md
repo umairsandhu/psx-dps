@@ -97,8 +97,11 @@ column.
 
 ## Request notes
 
-- **Do not send `X-Requested-With: XMLHttpRequest`** — it triggers an empty
-  `403` from something in front of the app. Ordinary requests are fine.
+- **No WAF, no bot filter.** No block pages, CAPTCHAs or challenges have
+  been observed, and the User-Agent does not matter. `X-Requested-With:
+  XMLHttpRequest` is harmless on a working node — if it returns `403` you
+  are on a node that does not serve data routes (see DISCOVERY.md), which
+  is the same condition that returns `404` without the header.
 - No `ETag` or `Last-Modified`, and `Cache-Control: no-store`. Conditional
   requests are impossible; cache client-side on a TTL.
 - Keep-alive is supported and worth using.

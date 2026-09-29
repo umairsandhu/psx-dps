@@ -92,9 +92,37 @@ nothing in security.
 
 Things ruled out along the way, so nobody re-tests them: it is not the User-
 Agent (curl, browser and httpx UAs behave identically), not cookies, not the
-`Referer`, and not geo-blocking. Sending `X-Requested-With: XMLHttpRequest`
-is actively harmful — it triggers an empty `403` from something in front of
-the app — so this client does not send it.
+`Referer`, and not geo-blocking.
+
+### There is no WAF blocking us
+
+Worth stating plainly, because the symptoms invite the opposite conclusion.
+
+An early run sent `X-Requested-With: XMLHttpRequest` and got an empty `403`
+on exactly the data routes, which looked like a bot filter. It is not. That
+run was also landing on the bad node, and the two were confounded. A
+controlled test across both nodes settles it:
+
+| Node | Path | `X-Requested-With` | Status |
+|---|---|---|---|
+| `.16` (good) | `/symbols` | absent | 200 |
+| `.16` (good) | `/symbols` | **sent** | **200** |
+| `.16` (good) | `/company/MARI` | sent | 200 |
+| `.6` (bad) | `/symbols` | absent | 404 |
+| `.6` (bad) | `/symbols` | **sent** | **403** |
+| `.6` (bad) | `/company/MARI` | sent | 200 |
+
+So the header is harmless on a node that works. The `403` is just the bad
+node's other way of saying "I do not serve data routes" — 404 without the
+header, 403 with it.
+
+This is useful diagnostically: **a 403 on a data route is a positive
+signal that you are on the wrong node**, and a more specific one than a 404.
+
+No block page, no CAPTCHA, no challenge, no `Retry-After`, and no
+`robots.txt` on `dps` at all have ever been observed. The only real limit is
+an unpublished rate limit that manifests as connections hanging for a minute
+or two — see below.
 
 ## 5. Load-shaping facts, established by measurement
 

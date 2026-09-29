@@ -97,19 +97,84 @@ a 404. `psx-dps diagnose` re-pins and reports it.
 
 All of these were tried and made no difference: browser vs curl vs httpx
 User-Agents, cookies from the homepage, the `Referer` header, HTTP vs HTTPS,
-trailing slashes, and geo-blocking. One thing is actively harmful:
+trailing slashes, and geo-blocking.
 
-> Sending `X-Requested-With: XMLHttpRequest` triggers an empty **403**.
-> Do not send it.
+### It is not a WAF, and you are not blocked
+
+The symptoms strongly suggest bot-blocking. They are not. There is no WAF,
+no bot filter, no CAPTCHA and no challenge page in front of this service,
+and none has ever been observed.
+
+Specifically, a `403` on a data route does **not** mean you are blocked. It
+means you are on a node that does not serve data routes — the same condition
+that gives `404` without an `X-Requested-With` header:
+
+| Node | `X-Requested-With` | `/symbols` |
+|---|---|---|
+| good | absent | 200 |
+| good | sent | **200** |
+| bad | absent | 404 |
+| bad | sent | **403** |
+
+Treat a 403 as a *stronger* signal of the wrong node than a 404, and run
+`psx-dps diagnose`. Do not start rotating User-Agents or proxies — you would
+be working around a problem that does not exist, and building exactly the
+behaviour that could get you genuinely blocked.
+
+The only real limit is unpublished rate limiting, which shows up as
+connections hanging for a minute or two and then recovering on their own.
+That is what the cooldown exists for.
 
 ---
 
 ## Failures that have not happened yet, and what to do
 
+### Working out whether the IP changed — the 30-second version
+
+```bash
+psx-dps nodes
+```
+
+```
+ADDRESS          DATA   IN DNS  FIRST SEEN   LAST SERVED   LAST CHECKED
+52.128.23.16     yes    -       6d ago       just now      just now
+52.128.23.6      NO     yes     6d ago       never         just now
+
+currently serving data: 52.128.23.16
+note: DNS is advertising 52.128.23.6, which does NOT serve data.
+```
+
+Every probe is recorded with a timestamp, so this answers the question that
+is otherwise unanswerable after the fact: **which addresses have we ever
+seen, which still work, and when did one stop?** Read it as:
+
+| Row looks like | Means |
+|---|---|
+| `DATA yes` | Fine. Nothing to do. |
+| `DATA NO`, `LAST SERVED never` | Always been a non-data node. Normal — PSX runs both. |
+| `DATA NO`, `LAST SERVED 3h ago` | **This is a renumbering.** That address worked and now does not. |
+| Every row `DATA NO` | Nothing works → `psx-dps diagnose --rescan` |
+
+The `LAST SERVED` column is the one that matters. An address that used to
+serve data and no longer does is the signature of PSX moving, and it gives
+you the *when*, which is usually enough to correlate with anything else
+that changed.
+
+Because the A record rotates, one DNS lookup is never the whole picture.
+Harvest it over time — this touches DNS only, never PSX:
+
+```bash
+psx-dps nodes --sample 10 --interval 60     # ~10 minutes
+```
+
+Any new address it finds is probed, recorded, and remembered for later
+runs. This is the cheapest way to discover a node that exists but was not
+being advertised when you last looked.
+
 ### PSX renumbered its nodes
 
-`diagnose` reports nodes answering but none serving data, and `--rescan`
-finds nothing.
+`diagnose` reports nodes answering but none serving data, and `psx-dps
+nodes` shows an address that used to work.
 
 ```bash
 psx-dps diagnose --rescan
@@ -136,6 +201,15 @@ export PSX_NODE=<the address that returns 200>
 
 Permanent fix: add it to `SEED_NODES` in `src/psx_dps/transport.py` and open
 a PR — that address is then remembered for everyone.
+
+**Detecting it before it bites.** `psx-dps nodes` is cheap and touches PSX
+once per known address. Running it daily and alerting when
+`currently serving data` is empty, or when a previously-good address flips
+to `DATA NO`, turns a renumbering from an outage into a notification:
+
+```bash
+psx-dps nodes | grep -q "currently serving data" || alert "PSX nodes all dead"
+```
 
 ### PSX changed a payload shape
 

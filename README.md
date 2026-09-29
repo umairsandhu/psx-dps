@@ -97,6 +97,9 @@ Two documents worth reading before you wire this into anything scheduled:
   when PSX pushes back, what `CoolingDown` means, and the runbook for it.
 - **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** — how PSX has broken
   before, how each break was diagnosed, and what to do next time.
+- **[docs/SYMBOLS.md](docs/SYMBOLS.md)** — what a PSX ticker tells you: the
+  1,029-vs-496 trap, debt maturity dates encoded in symbols, rights issues,
+  sector codes, index membership, and tickers that rename silently.
 
 Check your own footprint any time:
 
@@ -190,6 +193,7 @@ psx.quote("NOTREAL")  # UnknownSymbol
 | `announcements [--type] [--symbol] [--query] [--count]` | announcements |
 | `movers` · `indices` · `index CODE` · `sectors` | breadth, indices, sectors |
 | `diagnose [--deep] [--rescan]` | find what broke, fix what it can, exit 1 on failure |
+| `nodes [--sample N]` | which addresses work and when that last changed |
 | `doctor` | probe nodes, show session/cache/budget state |
 | `cache [--clear]` | inspect or clear the shared cache |
 
@@ -241,8 +245,13 @@ note: DNS is advertising 52.128.23.6, which does NOT serve the data
   that route; use `history_by_month()` for those.
 - **Timestamps are PKT wall clock.** This library reads them as UTC+5 so a
   laptop in any timezone gets the same dates.
-- **`/symbols` (~1,030) ≠ `/market-watch` (~496).** The watch is only what's
-  trading.
+- **`/symbols` (1,029) ≠ `/market-watch` (496).** The watch is only what's
+  trading; 534 listed instruments are legitimately absent. See
+  [docs/SYMBOLS.md](docs/SYMBOLS.md).
+- **A `403` is not a block.** There is no WAF. It means you're on a node
+  that doesn't serve data routes — the same condition that gives `404`
+  without an `X-Requested-With` header. Never respond by rotating
+  User-Agents or proxies.
 - **Friday has a split session** for Jummah; the TTL calendar knows.
 - **Public holidays are not modelled** — PSX's list changes yearly and a
   stale table is worse than none. On a holiday the client just uses short
