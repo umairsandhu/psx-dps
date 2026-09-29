@@ -1,0 +1,283 @@
+"""HTTP transport: node selection, connection reuse, throttling, retries.
+
+The node problem is the reason this module is not thirty lines of requests.
+See docs/DISCOVERY.md for the full story; the short version is that
+dps.psx.com.pk is served by several nodes, some of which answer 404 for every
+JSON/XHR data route while serving ordinary HTML pages with 200 -- and the
+zone publishes a single rotating A record, so DNS will happily hand you only
+a broken one. We keep a candidate pool, probe it for a node that actually
+serves data, pin the winner, and re-probe when a pinned node starts 404ing.
+
+Connections are kept alive (PSX supports it; verified) so a burst of calls
+costs one TLS handshake instead of N.
+"""
+
+import http.client
+import json
+import os
+import socket
+import ssl
+import threading
+import time
+
+from .cache import Cache
+from .errors import NoHealthyNode, TransportError, UpstreamError
+from .ratelimit import Throttle, backoff_delays
+
+HOST = "dps.psx.com.pk"
+USER_AGENT = os.environ.get(
+    "PSX_DPS_USER_AGENT",
+    "psx-dps/0.1 (+https://github.com/umairsandhu/psx-dps)",
+)
+# Smallest data-only route we know of (~180 bytes) -- an ideal health probe.
+PROBE_PATH = "/data/symbol-position"
+# Addresses observed serving data, tried when the rotating A record hides one.
+SEED_NODES = ["52.128.23.16", "52.128.23.6"]
+NODE_TTL = 6 * 3600
+
+
+class Transport:
+    def __init__(
+        self,
+        cache=None,
+        throttle=None,
+        timeout=30.0,
+        retries=3,
+        state_dir=None,
+        user_agent=None,
+    ):
+        self.cache = cache if cache is not None else Cache()
+        self.throttle = throttle if throttle is not None else Throttle()
+        self.timeout = timeout
+        self.retries = max(1, int(retries))
+        self.user_agent = user_agent or USER_AGENT
+        self.state_dir = os.path.expanduser(state_dir or self.cache.dir)
+        self.node_path = os.path.join(self.state_dir, "node.json")
+        self._node = None
+        self._conn = None
+        self._lock = threading.RLock()
+        self.requests_made = 0
+
+    # -- node bookkeeping ------------------------------------------------
+
+    def _state(self):
+        try:
+            with open(self.node_path) as fh:
+                state = json.load(fh)
+            return state if isinstance(state, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_state(self, ip, candidates=()):
+        state = self._state()
+        known = state.get("known", [])
+        for cand in list(candidates) + [ip]:
+            if cand and cand not in known:
+                known.append(cand)
+        try:
+            os.makedirs(os.path.dirname(self.node_path), exist_ok=True)
+            with open(self.node_path, "w") as fh:
+                json.dump({"ip": ip, "at": time.time(), "known": known}, fh)
+        except OSError:
+            pass
+
+    @staticmethod
+    def dns():
+        try:
+            infos = socket.getaddrinfo(HOST, 443, socket.AF_INET, socket.SOCK_STREAM)
+        except socket.gaierror:
+            return []
+        out = []
+        for info in infos:
+            ip = info[4][0]
+            if ip not in out:
+                out.append(ip)
+        return out
+
+    def candidates(self):
+        """Nodes to try, best guess first: env pin, DNS, remembered, seeds."""
+        env = os.environ.get("PSX_NODE")
+        out = []
+        for ip in (
+            ([env] if env else [])
+            + self.dns()
+            + self._state().get("known", [])
+            + SEED_NODES
+        ):
+            if ip and ip not in out:
+                out.append(ip)
+        return out
+
+    def pinned_node(self):
+        state = self._state()
+        if time.time() - state.get("at", 0) > NODE_TTL:
+            return None
+        return state.get("ip")
+
+    def probe(self, ip):
+        """Does this node serve the data routes? Returns (ok, status_or_err)."""
+        try:
+            status, _ = self._raw(ip, "GET", PROBE_PATH, None, timeout=12, reuse=False)
+            return status == 200, status
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            return False, exc
+
+    def select_node(self, force=False, report=None):
+        with self._lock:
+            if not force:
+                pinned = self.pinned_node()
+                if pinned:
+                    self._node = pinned
+                    return pinned
+            tried = self.candidates()
+            unreachable = 0
+            for ip in tried:
+                ok, detail = self.probe(ip)
+                if report:
+                    report(ip, ok, detail)
+                if ok:
+                    self._save_state(ip, tried)
+                    self._set_node(ip)
+                    return ip
+                if isinstance(detail, Exception):
+                    unreachable += 1
+            # Two very different failures wear the same exception, so say
+            # which one happened: "every node refused to connect" is almost
+            # always a local network problem, not PSX changing its addresses.
+            if tried and unreachable == len(tried):
+                raise NoHealthyNode(
+                    f"could not connect to any of {', '.join(tried)} on port 443. "
+                    "This usually means no network, a proxy, or a firewall -- "
+                    f"not a {HOST} problem."
+                )
+            raise NoHealthyNode(
+                f"no {HOST} node served {PROBE_PATH}; tried "
+                f"{', '.join(tried) or 'nothing'}. PSX may have renumbered its "
+                "nodes. Force one with PSX_NODE=<ip>, or run `psx-dps doctor`."
+            )
+
+    def _set_node(self, ip):
+        if ip != self._node:
+            self._close()
+            self._node = ip
+
+    # -- connection handling ---------------------------------------------
+
+    def _close(self):
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except OSError:
+                pass
+            self._conn = None
+
+    def _open(self, ip, timeout):
+        """TLS to a pinned IP, still validated against the real hostname."""
+        ctx = ssl.create_default_context()
+        sock = socket.create_connection((ip, 443), timeout=timeout)
+        conn = http.client.HTTPSConnection(HOST, timeout=timeout)
+        conn.sock = ctx.wrap_socket(sock, server_hostname=HOST)
+        return conn
+
+    def _raw(self, ip, method, path, body, timeout=None, reuse=True):
+        """One HTTP round trip. Returns (status, text)."""
+        timeout = timeout or self.timeout
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"https://{HOST}/",
+        }
+        payload = None
+        if body is not None:
+            from urllib.parse import urlencode
+
+            payload = urlencode(body).encode()
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+        if not reuse:
+            conn = self._open(ip, timeout)
+            try:
+                conn.request(method, path, body=payload, headers=headers)
+                resp = conn.getresponse()
+                return resp.status, resp.read().decode("utf-8", "replace")
+            finally:
+                conn.close()
+
+        with self._lock:
+            if self._conn is None:
+                self._conn = self._open(ip, timeout)
+            try:
+                self._conn.request(method, path, body=payload, headers=headers)
+                resp = self._conn.getresponse()
+                text = resp.read().decode("utf-8", "replace")
+            except (http.client.HTTPException, OSError):
+                # A kept-alive socket the server has since dropped: one clean
+                # retry on a fresh connection before treating it as an error.
+                self._close()
+                self._conn = self._open(ip, timeout)
+                self._conn.request(method, path, body=payload, headers=headers)
+                resp = self._conn.getresponse()
+                text = resp.read().decode("utf-8", "replace")
+            if resp.will_close:
+                self._close()
+            return resp.status, text
+
+    # -- public API --------------------------------------------------------
+
+    def request(self, path, body=None, ttl=0, force_refresh=False):
+        """Fetch `path`, honouring the cache, throttle, retries and node pool."""
+        method = "POST" if body is not None else "GET"
+        if not force_refresh:
+            cached = self.cache.get(method, path, body, ttl)
+            if cached is not None:
+                return cached
+
+        node = self._node or self.select_node()
+        last_error = None
+        reprobed = False
+
+        for delay in backoff_delays(self.retries):
+            if delay:
+                time.sleep(delay)
+            self.throttle.acquire()
+            try:
+                status, text = self._raw(node, method, path, body)
+                self.requests_made += 1
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                last_error = exc
+                self._close()
+                if not reprobed:
+                    node, reprobed = self.select_node(force=True), True
+                continue
+
+            if status == 200:
+                if ttl > 0:
+                    self.cache.set(method, path, body, text)
+                return text
+
+            if status == 404 and not reprobed:
+                # Overwhelmingly this is the wrong-node failure, not a real
+                # 404 -- re-probe the pool once before believing it.
+                node, reprobed = self.select_node(force=True), True
+                last_error = UpstreamError(f"{path}: HTTP 404 on node {node}")
+                continue
+
+            if status in (429, 500, 502, 503, 504):
+                last_error = UpstreamError(f"{path}: HTTP {status}")
+                continue
+
+            raise UpstreamError(f"{path}: HTTP {status}")
+
+        raise TransportError(f"{path} failed after {self.retries} attempts: {last_error}")
+
+    def close(self):
+        with self._lock:
+            self._close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
