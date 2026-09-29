@@ -27,7 +27,7 @@ import os
 import random
 import time
 
-from .errors import CircuitOpen, RateLimited
+from .errors import CoolingDown, RateLimited
 
 try:
     import fcntl
@@ -185,11 +185,11 @@ class Breaker:
         return max(0.0, self._read().get("until", 0) - time.time())
 
     def check(self):
-        """Raise CircuitOpen if we are standing down."""
+        """Raise CoolingDown if we are standing down."""
         left = self.remaining()
         if left > 0:
             state = self._read()
-            raise CircuitOpen(
+            raise CoolingDown(
                 f"standing down for another {int(left)}s after "
                 f"{state.get('strikes', 1)} rejection(s) from PSX "
                 f"(last: {state.get('reason', 'unknown')}). "

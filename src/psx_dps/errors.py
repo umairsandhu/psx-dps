@@ -46,12 +46,38 @@ class RateLimited(PSXError):
     """
 
 
-class CircuitOpen(PSXError):
-    """PSX signalled distress recently, so we are deliberately standing down.
+class CoolingDown(PSXError):
+    """We are deliberately not sending a request right now.
 
-    Raised instead of sending a request while a cooldown is in effect. The
-    cooldown is shared by every process on the machine: if one project gets
-    a 429, the others stop too, rather than each discovering it the hard way.
+    PSX recently told us to slow down (an HTTP 429 or 503), or repeatedly
+    failed, so this client is standing down for a while. Nothing is broken
+    and you are not banned -- this is the library choosing to be quiet.
 
-    Treat this as "skip this cycle", not as a failure to retry around.
+    Think of it as the trip switch in a fuse box. When something draws too
+    much current the switch opens, the circuit goes dead on purpose, and you
+    wait before closing it again. Hammering the switch back on is how you
+    start a fire. Same idea here: the alternative to backing off is retrying
+    into a server that already said no, which is what actually gets clients
+    blocked.
+
+    The stand-down is shared by every psx-dps process on the machine, so one
+    project's rejection quiets the others too.
+
+    Handle it by skipping this cycle, not by retrying around it:
+
+        try:
+            snap = psx.snapshot()
+        except CoolingDown as exc:
+            log.warning("PSX asked us to back off: %s", exc)
+            return
+
+    Cached data is still served while this is in effect, so an app that
+    already has data keeps working -- it just refreshes less often.
+
+    `CircuitOpen` is an alias for this class, after the "circuit breaker"
+    pattern this implements.
     """
+
+
+#: The standard name for this pattern, for anyone who knows it by that.
+CircuitOpen = CoolingDown

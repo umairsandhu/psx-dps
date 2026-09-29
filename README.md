@@ -77,10 +77,10 @@ the fly, the defaults do the work:
 - **24h budget fuse** (5,000 requests) so a runaway loop fails locally
   instead of hammering PSX all day.
 - **Keep-alive**, **gzip** and **jittered exponential backoff**.
-- **Stands down when PSX pushes back** — a 429 or 503 trips a shared,
-  escalating cooldown (60s → 1h) across every process on the machine, with
-  no retries into it, honouring `Retry-After`. Cached data keeps serving.
-  See [How not to get blocked](docs/FAIR-USE.md#how-not-to-get-blocked).
+- **Stands down when PSX pushes back** — a 429 or 503 stops immediately with
+  no retries and starts a shared, escalating cooldown (60s → 1h) across every
+  process on the machine, honouring `Retry-After`. Cached data keeps serving,
+  so you slow down without going blind.
 
 **Polling on a schedule?** A full market-wide sweep is 6 requests, so
 5-minute polling costs ~432 requests/day — 9% of the built-in daily fuse —
@@ -88,9 +88,13 @@ and off-hours polling is free because TTLs stretch to the next open. See
 [Polling on a schedule](docs/FAIR-USE.md#polling-on-a-schedule-trackers-dashboards)
 for the numbers and the one pattern that would turn it abusive.
 
-Please read [docs/FAIR-USE.md](docs/FAIR-USE.md) before wiring this into
-anything scheduled. The two rules that matter most: share the cache
-directory, and fetch the market watch once instead of looping over symbols.
+Two documents worth reading before you wire this into anything scheduled:
+
+- **[docs/FAIR-USE.md](docs/FAIR-USE.md)** — polling budgets and the rules
+  that keep the footprint small. The two that matter most: share the cache
+  directory, and fetch the market watch once instead of looping over symbols.
+- **[docs/STAYING-UNBLOCKED.md](docs/STAYING-UNBLOCKED.md)** — what happens
+  when PSX pushes back, what `CoolingDown` means, and the runbook for it.
 
 Check your own footprint any time:
 
@@ -133,8 +137,34 @@ Client(
 )
 ```
 
-Errors all derive from `PSXError`: `UnknownSymbol`, `NoData`,
-`NoHealthyNode`, `TransportError`, `UpstreamError`, `RateLimited`.
+Errors all derive from `PSXError`:
+
+| Exception | Means |
+|---|---|
+| `UnknownSymbol` | not a PSX symbol |
+| `NoData` | valid request, nothing to return (non-trading day, untraded symbol) |
+| `CoolingDown` | we are deliberately not calling PSX right now — see below |
+| `NoHealthyNode` | no node served the data routes, or you are offline |
+| `RateLimited` | your own 24h budget fuse is spent |
+| `TransportError` / `UpstreamError` | network failure / unexpected HTTP status |
+
+`CoolingDown` is the one to handle explicitly. PSX asked us to slow down, so
+the library stopped — like a trip switch in a fuse box, the circuit is dead
+on purpose. Skip the cycle rather than retrying around it:
+
+```python
+from psx_dps import Client, CoolingDown
+
+try:
+    store(psx.snapshot())
+except CoolingDown as exc:
+    log.warning("PSX asked us to back off: %s", exc)
+    return                      # no retry - retrying is what gets you blocked
+```
+
+It is shared across processes, escalates 60s → 5m → 15m → 1h, forgives after
+a clean stretch, and keeps serving cached data throughout.
+[Full explanation and runbook](docs/STAYING-UNBLOCKED.md).
 
 `NoData` and `UnknownSymbol` are deliberately different — a symbol can be
 listed but not trading today, which is not a typo:

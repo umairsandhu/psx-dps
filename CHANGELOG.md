@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Stand down instead of retrying when PSX pushes back: a 429 or 503 stops
+  immediately and starts a shared, escalating cooldown (60s → 1h) honouring
+  `Retry-After`. Cached data keeps serving throughout.
+- Request gzip — the market watch drops from ~476 KB to ~60 KB on the wire.
+- `Client.snapshot()`: one timestamped, numeric snapshot of the whole market,
+  so pollers never need per-symbol calls.
+- `psx-dps cooldown` to inspect or clear the back-off state; `doctor` and
+  `health()` now report it.
+- Renamed `CircuitOpen` to `CoolingDown` because the old name was jargon.
+  `CircuitOpen` remains as an alias.
+- New [docs/STAYING-UNBLOCKED.md](docs/STAYING-UNBLOCKED.md).
+
 ## 0.1.0 — 2026-09-29
 
 First release.

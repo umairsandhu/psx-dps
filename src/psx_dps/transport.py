@@ -24,7 +24,7 @@ import zlib
 
 from .cache import Cache
 from .errors import (
-    CircuitOpen,
+    CoolingDown,
     NoHealthyNode,
     TransportError,
     UpstreamError,
@@ -325,7 +325,7 @@ class Transport:
                 # and every other project on this machine, backs off too.
                 waited = self.breaker.record_failure(f"HTTP {status} on {path}",
                                                      retry_after)
-                raise CircuitOpen(
+                raise CoolingDown(
                     f"{path}: PSX returned HTTP {status}. Standing down for "
                     f"{int(waited)}s across all psx-dps processes here."
                 )

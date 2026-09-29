@@ -9,7 +9,7 @@ import conftest  # noqa: F401
 import pytest
 from psx_dps.cache import Cache
 from psx_dps.errors import (
-    CircuitOpen,
+    CoolingDown,
     NoHealthyNode,
     TransportError,
     UpstreamError,
@@ -155,7 +155,7 @@ def test_429_trips_a_cooldown_instead_of_retrying(tmp_path):
         return (200, "ok", None) if path == PROBE_PATH else (429, "slow down", None)
 
     transport = build(tmp_path, net, retries=5)
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         transport.request("/market-watch", ttl=0)
     assert seen.count("/market-watch") == 1, "must not retry into a 429"
     assert transport.breaker.remaining() > 0
@@ -167,10 +167,10 @@ def test_cooldown_blocks_the_next_call_without_sending_it(tmp_path):
         return (200, "ok", None) if path == PROBE_PATH else (429, "slow", None)
 
     transport = build(tmp_path, net)
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         transport.request("/market-watch", ttl=0)
     before = len(transport.breaker._read())
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         transport.request("/indices", ttl=0)   # different path, still barred
     assert before
 
@@ -181,11 +181,11 @@ def test_cooldown_is_shared_between_clients(tmp_path):
         return (200, "ok", None) if path == PROBE_PATH else (429, "slow", None)
 
     first = build(tmp_path, net)
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         first.request("/market-watch", ttl=0)
 
     second = build(tmp_path, FakeNet())          # a healthy, unrelated client
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         second.request("/symbols", ttl=0)
 
 
@@ -197,7 +197,7 @@ def test_retry_after_header_is_honoured(tmp_path):
         return 503, "unavailable", 1800.0
 
     transport = build(tmp_path, net)
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         transport.request("/market-watch", ttl=0)
     assert transport.breaker.remaining() > 1700
 

@@ -18,6 +18,7 @@ from .cache import Cache
 from .client import ANNOUNCEMENT_TYPES, INDEX_CODES, Client
 from .errors import (
     CircuitOpen,
+    CoolingDown,
     NoData,
     NoHealthyNode,
     PSXError,
@@ -49,6 +50,7 @@ __all__ = [
     "UnknownSymbol",
     "NoData",
     "RateLimited",
+    "CoolingDown",
     "CircuitOpen",
     "__version__",
 ]

@@ -93,23 +93,23 @@ def test_explicit_retry_after_wins(tmp_path):
 
 
 def test_check_raises_while_cooling_and_clears_after(tmp_path):
-    from psx_dps.errors import CircuitOpen
+    from psx_dps.errors import CoolingDown
     from psx_dps.ratelimit import Breaker
 
     breaker = Breaker(directory=str(tmp_path))
     breaker.check()                       # clear: no raise
     breaker.record_failure("429")
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         breaker.check()
     assert breaker.status()["cooling_down"] is True
 
 
 def test_cooldown_is_visible_to_another_process(tmp_path):
-    from psx_dps.errors import CircuitOpen
+    from psx_dps.errors import CoolingDown
     from psx_dps.ratelimit import Breaker
 
     Breaker(directory=str(tmp_path)).record_failure("429")
-    with pytest.raises(CircuitOpen):
+    with pytest.raises(CoolingDown):
         Breaker(directory=str(tmp_path)).check()
 
 
