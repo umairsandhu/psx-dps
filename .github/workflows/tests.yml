@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manually runnable, so a suspected flake can be stress-tested without
+  # pushing an empty commit to provoke it.
+  workflow_dispatch:
 
 jobs:
   test:
