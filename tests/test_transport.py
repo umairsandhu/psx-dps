@@ -251,5 +251,21 @@ def test_a_502_on_every_node_cools_down_for_at_most_five_minutes(tmp_path):
         transport.breaker._write(state)
         with pytest.raises(TransportError):
             transport.request("/market-watch", ttl=0)
-    assert transport.breaker._read()["strikes"] >= 4, "the outage must keep counting"
+    assert transport.breaker._read()["gateway_strikes"] >= 4, "the outage must keep counting"
     assert 0 < transport.breaker.remaining() <= 300
+
+
+def test_a_502_on_every_node_and_every_probe_still_trips_the_breaker(tmp_path):
+    """The review of the first version: when the 502 re-probe found no node,
+    NoHealthyNode left request() before record_failure ran, so a caller in a
+    loop sent three requests a call for ever and the breaker stayed at zero."""
+
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        return 502, "bad gateway", None
+
+    transport = build(tmp_path, net, retries=3)
+    transport._node = BAD
+    with pytest.raises((TransportError, CoolingDown)):
+        transport.request("/market-watch", ttl=0)
+    assert transport.breaker.remaining() > 0
+    assert transport.breaker.remaining() <= 60

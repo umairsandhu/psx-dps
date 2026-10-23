@@ -350,6 +350,7 @@ class Transport:
                 self.bytes_downloaded += len(text)
             except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
                 last_error = exc
+                last_status = None
                 self._close()
                 if not reprobed:
                     node, reprobed = self.select_node(force=True), True
@@ -382,8 +383,14 @@ class Transport:
             if status in (502, 504) and not reprobed:
                 # One node's gateway down is not the portal down. On 2026-10-23
                 # 52.128.23.16 answered the main site's maintenance 502 while
-                # 52.128.23.6 served data: ask the other address once.
-                node, reprobed = self.select_node(force=True), True
+                # 52.128.23.6 served data: ask the other address once. If no
+                # node serves, keep this one: the failure must still reach the
+                # breaker below, or a caller in a loop is never slowed.
+                reprobed = True
+                try:
+                    node = self.select_node(force=True)
+                except NoHealthyNode:
+                    pass
 
             if status in (500, 502, 504):
                 last_status = status

@@ -140,10 +140,14 @@ def test_a_gateway_outage_never_waits_more_than_five_minutes(tmp_path):
     assert max(waits) == 300, "a gateway outage climbed the pushback ladder"
 
 
-def test_pushback_after_a_gateway_outage_still_escalates(tmp_path):
+def test_gateway_strikes_do_not_raise_the_first_pushback_strike(tmp_path):
+    """Three 502s of a maintenance window, then a 429: the 429 is a FIRST
+    pushback strike (60 s), not the fourth rung (an hour)."""
     from psx_dps.ratelimit import Breaker
 
     breaker = Breaker(directory=str(tmp_path))
-    for _ in range(4):
+    for _ in range(3):
         breaker.record_failure("502", gateway=True)
-    assert breaker.record_failure("429") == 3600
+    assert breaker.record_failure("429") == 60
+    assert breaker.record_failure("429") == 300, "pushback still climbs its own ladder"
+    assert breaker.status()["gateway_strikes"] == 3

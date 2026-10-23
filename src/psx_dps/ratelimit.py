@@ -203,7 +203,7 @@ class Breaker:
             state = self._read()
             raise CoolingDown(
                 f"standing down for another {int(left)}s after "
-                f"{state.get('strikes', 1)} rejection(s) from PSX "
+                f"{(state.get('strikes', 0) + state.get('gateway_strikes', 0)) or 1} rejection(s) from PSX "
                 f"(last: {state.get('reason', 'unknown')}). "
                 "This is a deliberate cooldown shared by every psx-dps "
                 "process on this machine -- skip this cycle rather than "
@@ -224,10 +224,17 @@ class Breaker:
             # make today's first hiccup expensive.
             if now - state.get("last_failure", 0) > self.RECOVERY:
                 state["strikes"] = 0
-            ladder = self.GATEWAY_PENALTIES if gateway else self.PENALTIES
-            strikes = state.get("strikes", 0) + 1
-            penalty = ladder[min(strikes, len(ladder)) - 1]
-            strikes = min(strikes, len(self.PENALTIES))
+                state["gateway_strikes"] = 0
+            # Counted apart: three 502s of a maintenance window must not put the
+            # first 429 after it on the one-hour rung.
+            if gateway:
+                n = state.get("gateway_strikes", 0) + 1
+                state["gateway_strikes"] = n
+                penalty = self.GATEWAY_PENALTIES[min(n, len(self.GATEWAY_PENALTIES)) - 1]
+                strikes = state.get("strikes", 0)
+            else:
+                strikes = min(state.get("strikes", 0) + 1, len(self.PENALTIES))
+                penalty = self.PENALTIES[strikes - 1]
             # PSX asking for a specific wait always wins, even if it is long.
             if retry_after is not None:
                 penalty = max(penalty, float(retry_after))
@@ -251,6 +258,7 @@ class Breaker:
             with _FileLock(self.lock_path):
                 state = self._read()
                 state["strikes"] = 0
+                state["gateway_strikes"] = 0
                 self._write(state)
 
     def status(self):
@@ -258,6 +266,7 @@ class Breaker:
         return {
             "cooling_down": self.remaining() > 0,
             "seconds_remaining": int(self.remaining()),
-            "strikes": state.get("strikes", 0),
+            "strikes": state.get("strikes", 0) + state.get("gateway_strikes", 0),
+            "gateway_strikes": state.get("gateway_strikes", 0),
             "reason": state.get("reason"),
         }
