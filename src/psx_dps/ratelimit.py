@@ -158,6 +158,13 @@ class Breaker:
 
     # Escalating stand-down, in seconds, indexed by consecutive strikes.
     PENALTIES = (60, 300, 900, 3600)
+    # A gateway error (502, 504) is nginx saying the server behind it did not
+    # answer: an outage at PSX, not a complaint about our rate. It climbs its own
+    # short ladder and never waits more than five minutes, so data resumes within
+    # five minutes of PSX recovering. On 2026-10-23 www.psx.com.pk was down for
+    # maintenance and one dps node answered its 502 page while the other served
+    # data; on the long ladder a reader sat out an hour of an open session.
+    GATEWAY_PENALTIES = (60, 120, 300)
     # A clean run this long forgives the accumulated strikes.
     RECOVERY = 900
 
@@ -203,8 +210,11 @@ class Breaker:
                 "retrying around it."
             )
 
-    def record_failure(self, reason, retry_after=None):
-        """Trip or extend the cooldown. Returns the cooldown in seconds."""
+    def record_failure(self, reason, retry_after=None, gateway=False):
+        """Trip or extend the cooldown. Returns the cooldown in seconds.
+
+        `gateway=True` for a 502/504 outage: the short ladder, capped at five
+        minutes. A 429 or 503 is pushback and takes the long one."""
         if not self.enabled:
             return 0.0
         with _FileLock(self.lock_path):
@@ -214,8 +224,10 @@ class Breaker:
             # make today's first hiccup expensive.
             if now - state.get("last_failure", 0) > self.RECOVERY:
                 state["strikes"] = 0
-            strikes = min(state.get("strikes", 0) + 1, len(self.PENALTIES))
-            penalty = self.PENALTIES[strikes - 1]
+            ladder = self.GATEWAY_PENALTIES if gateway else self.PENALTIES
+            strikes = state.get("strikes", 0) + 1
+            penalty = ladder[min(strikes, len(ladder)) - 1]
+            strikes = min(strikes, len(self.PENALTIES))
             # PSX asking for a specific wait always wins, even if it is long.
             if retry_after is not None:
                 penalty = max(penalty, float(retry_after))

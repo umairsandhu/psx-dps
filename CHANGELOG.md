@@ -1,6 +1,15 @@
 # Changelog
 
+
 ## Unreleased
+
+- **A gateway error is an outage, not pushback.** `502` and `504` re-probe the other node once,
+  then climb a short cooldown ladder (60, 120, 300 s, capped at five minutes). `429` and `503` keep the
+  long ladder. On 2026-10-23 the main site was down for maintenance, one node answered its 502 page
+  and the other served data; the long ladder held a reader silent for an hour of an open session.
+- `Breaker.record_failure(..., gateway=True)`.
+- docs: STAYING-UNBLOCKED.md (the table and the ladder), TROUBLESHOOTING.md ("The main site is down, but
+  dps is up").
 
 - Stand down instead of retrying when PSX pushes back: a 429 or 503 stops
   immediately and starts a shared, escalating cooldown (60s → 1h) honouring

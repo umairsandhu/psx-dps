@@ -74,7 +74,8 @@ skip this cycle rather than retrying around it.
 | `429 Too Many Requests` | Stop at once, **no retries**, start a cooldown |
 | `503 Service Unavailable` | Same |
 | Sends a `Retry-After` header | Honoured, and it wins even if longer than ours |
-| `500`, `502`, `504` | A few jittered retries, then a cooldown |
+| `500` | A few jittered retries, then a cooldown |
+| `502`, `504` (a gateway: the server behind nginx did not answer) | One re-probe of the other node, a few retries, then a **short** cooldown: 1, 2, then 5 minutes, never longer |
 | Connections repeatedly fail | Cooldown, so the next cron run doesn't walk in |
 
 ### The cooldown escalates, then forgives
@@ -89,7 +90,13 @@ skip this cycle rather than retrying around it.
 ```
 
 A single blip costs you a minute. A sustained problem costs an hour and
-stops being PSX's problem. Old blips are forgiven, so today's first hiccup
+stops being PSX's problem.
+
+**A gateway outage is not pushback.** A `502` or `504` says PSX's own server
+did not answer its front end. It says nothing about your rate. It climbs a
+short ladder — 1, 2, then 5 minutes — and never waits longer, so your data
+comes back within five minutes of PSX recovering. On 2026-10-23 the long
+ladder held a reader silent for an hour of an open session while dps served. Old blips are forgiven, so today's first hiccup
 is never expensive because of something last week.
 
 ### It is shared between processes

@@ -267,6 +267,31 @@ paths but is identity except under `/sukuk`.
 
 Full write-up: [DISCOVERY.md](DISCOVERY.md).
 
+### The main site is down, but dps is up (2026-10-23)
+
+**Symptom.** `www.psx.com.pk` answers `502 Bad Gateway` (or a maintenance
+page). Your reader logs `502` and stands down. A browser shows
+`dps.psx.com.pk` working.
+
+**What it is.** The main site and the data portal are different servers.
+On 2026-10-23, from 11:31 PKT, `www.psx.com.pk` and the node `52.128.23.16`
+answered the same 922-byte nginx 502 page, while `52.128.23.6` — the node DNS
+returns for `dps.psx.com.pk` — served every data route.
+
+**What the library does.** A `502` or `504` re-probes the other node once, so a
+reader pinned to the broken node moves to the working one without a strike.
+If every node answers `502`, the cooldown is short (1, 2, then 5 minutes) and
+the next cycle tries again. Nothing to do by hand.
+
+**Checking it yourself, in two requests:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://www.psx.com.pk/          # the main site
+curl -s -o /dev/null -w '%{http_code}\n' https://dps.psx.com.pk/indices   # the data portal
+```
+
+A `502` from the first and a `200` from the second is this case.
+
 ### PSX is pushing back
 
 `diagnose` reports a cooldown. This is the system working, not a fault.

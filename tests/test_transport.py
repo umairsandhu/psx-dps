@@ -220,3 +220,36 @@ def test_repeated_transport_failure_also_cools_down(tmp_path):
     with pytest.raises(TransportError):
         transport.request("/symbols", ttl=0)
     assert transport.breaker.remaining() > 0
+
+
+# -- a gateway outage on one node (2026-10-23) ---------------------------
+
+def test_a_502_on_the_pinned_node_moves_to_the_node_that_serves(tmp_path):
+    """www.psx.com.pk was down for maintenance; one dps node answered its 502
+    page and the other served data. A 502 must try the other address."""
+
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        if ip == GOOD:
+            return 200, f"payload from {ip}", None
+        return 502, "<html>502 Bad Gateway</html>", None
+
+    transport = build(tmp_path, net, candidates=(GOOD, BAD))
+    transport._node = BAD
+    assert transport.request("/market-watch", ttl=0) == f"payload from {GOOD}"
+    assert transport.breaker.remaining() == 0, "one node's gateway is not the portal down"
+
+
+def test_a_502_on_every_node_cools_down_for_at_most_five_minutes(tmp_path):
+    def net(ip, method, path, body, timeout=None, reuse=True):
+        return (200, "ok", None) if path == PROBE_PATH else (502, "bad gateway", None)
+
+    transport = build(tmp_path, net, retries=3)
+    for _ in range(6):
+        # Each cycle starts after the last cooldown ended; the strikes stay.
+        state = transport.breaker._read()
+        state["until"] = 0
+        transport.breaker._write(state)
+        with pytest.raises(TransportError):
+            transport.request("/market-watch", ttl=0)
+    assert transport.breaker._read()["strikes"] >= 4, "the outage must keep counting"
+    assert 0 < transport.breaker.remaining() <= 300

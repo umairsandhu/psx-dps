@@ -337,6 +337,7 @@ class Transport:
 
         node = self._node or self.select_node()
         last_error = None
+        last_status = None
         reprobed = False
 
         for delay in backoff_delays(self.retries):
@@ -378,7 +379,14 @@ class Transport:
                     f"{int(waited)}s across all psx-dps processes here."
                 )
 
+            if status in (502, 504) and not reprobed:
+                # One node's gateway down is not the portal down. On 2026-10-23
+                # 52.128.23.16 answered the main site's maintenance 502 while
+                # 52.128.23.6 served data: ask the other address once.
+                node, reprobed = self.select_node(force=True), True
+
             if status in (500, 502, 504):
+                last_status = status
                 last_error = UpstreamError(f"{path}: HTTP {status}")
                 continue
 
@@ -386,7 +394,10 @@ class Transport:
 
         # Repeated failure is itself a signal; cool down rather than let the
         # next scheduled run walk straight back into it.
-        self.breaker.record_failure(f"{self.retries} failed attempts on {path}")
+        self.breaker.record_failure(
+            f"{self.retries} failed attempts on {path}"
+            + (f" (last: HTTP {last_status})" if last_status else ""),
+            gateway=last_status in (502, 504))
         raise TransportError(
             f"{path} failed after {self.retries} attempts: {last_error}"
         )

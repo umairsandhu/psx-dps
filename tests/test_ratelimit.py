@@ -128,3 +128,22 @@ def test_breaker_can_be_disabled(tmp_path):
     breaker = Breaker(directory=str(tmp_path), enabled=False)
     breaker.record_failure("429")
     breaker.check()                       # must not raise
+
+
+def test_a_gateway_outage_never_waits_more_than_five_minutes(tmp_path):
+    """2026-10-23: a 502 from PSX's maintenance is not pushback."""
+    from psx_dps.ratelimit import Breaker
+
+    breaker = Breaker(directory=str(tmp_path))
+    waits = [breaker.record_failure("502", gateway=True) for _ in range(8)]
+    assert waits[:3] == [60, 120, 300]
+    assert max(waits) == 300, "a gateway outage climbed the pushback ladder"
+
+
+def test_pushback_after_a_gateway_outage_still_escalates(tmp_path):
+    from psx_dps.ratelimit import Breaker
+
+    breaker = Breaker(directory=str(tmp_path))
+    for _ in range(4):
+        breaker.record_failure("502", gateway=True)
+    assert breaker.record_failure("429") == 3600
